@@ -17,6 +17,9 @@ package okhttp3.sample;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.nio.charset.Charset;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -27,10 +30,11 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import okhttp3.Cache;
 import okhttp3.HttpUrl;
+import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
+import okhttp3.OkUrlFactory;
 import okhttp3.internal.NamedRunnable;
+import okhttp3.internal.Util;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -86,28 +90,29 @@ public final class Crawler {
     if (previous != null) hostnameCount = previous;
     if (hostnameCount.incrementAndGet() > 100) return;
 
-    Request request = new Request.Builder()
-        .url(url)
-        .build();
-    Response response = client.newCall(request).execute();
-    String responseSource = response.networkResponse() != null
-        ? ("(network: " + response.networkResponse().code() + " over " + response.protocol() + ")")
-        : "(cache)";
-    int responseCode = response.code();
+    HttpURLConnection connection = new OkUrlFactory(client).open(url.url());
+    connection.connect();
+    try (InputStream in = connection.getInputStream()) {
+      int responseCode = connection.getResponseCode();
+      String responseSource = "(" + connection.getHeaderField("OkHttp-Response-Source") +
+          " over " + connection.getHeaderField("OkHttp-Selected-Protocol") + ")";
 
-    System.out.printf("%03d: %s %s%n", responseCode, url, responseSource);
+      System.out.printf("%03d: %s %s%n", responseCode, url, responseSource);
 
-    String contentType = response.header("Content-Type");
-    if (responseCode != 200 || contentType == null) {
-      response.body().close();
-      return;
-    }
+      String contentType = connection.getHeaderField("Content-Type");
+      if (responseCode != 200 || contentType == null) return;
 
-    Document document = Jsoup.parse(response.body().string(), url.toString());
-    for (Element element : document.select("a[href]")) {
-      String href = element.attr("href");
-      HttpUrl link = response.request().url().resolve(href);
-      if (link != null) queue.add(link);
+      MediaType mediaType = MediaType.parse(contentType);
+      if (mediaType == null || !mediaType.subtype().equals("html")) return;
+
+      Charset charset = mediaType.charset(Util.UTF_8);
+
+      Document document = Jsoup.parse(in, charset.name(), url.toString());
+      for (Element element : document.select("a[href]")) {
+        String href = element.attr("href");
+        HttpUrl link = HttpUrl.get(connection.getURL()).resolve(href);
+        if (link != null) queue.add(link);
+      }
     }
   }
 
